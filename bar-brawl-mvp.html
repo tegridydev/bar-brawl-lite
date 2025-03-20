@@ -1,0 +1,2018 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Bar Brawl Prototype</title>
+    <style>
+        /* Basic styling for background, fonts, and layout */
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: #222;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            font-family: Arial, sans-serif;
+            color: white;
+        }
+
+        /* Canvas where the game is drawn */
+        canvas {
+            border: 2px solid #444;
+            background-color: #111;
+        }
+
+        /* Container that holds the canvas and UI elements */
+        #game-container {
+            position: relative;
+        }
+
+        /* UI overlay at the top-left showing health, score, etc. */
+        #ui {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            padding: 5px;
+            background-color: rgba(0, 0, 0, 0.5);
+        }
+
+        /* Bar for displaying special attack meter at the bottom-left */
+        #special-meter {
+            position: absolute;
+            bottom: 10px;
+            left: 10px;
+            width: 200px;
+            height: 15px;
+            background-color: rgba(0, 0, 0, 0.5);
+            border: 1px solid #444;
+        }
+
+        /* The fill portion of the special attack meter */
+        #special-fill {
+            height: 100%;
+            width: 0%;
+            background-color: #ff9900;
+        }
+
+        /* Control instructions at the bottom of the UI */
+        #controls {
+            margin-top: 10px;
+            text-align: center;
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+    <div id="game-container">
+        <!-- The main game canvas -->
+        <canvas id="gameCanvas" width="800" height="600"></canvas>
+
+        <!-- UI overlay displaying player stats -->
+        <div id="ui">Health: <span id="health">100</span> | Enemies KO'd: <span id="score">0</span> | Current Weapon: <span id="weapon">Fists</span></div>
+
+        <!-- Special meter display -->
+        <div id="special-meter"><div id="special-fill"></div></div>
+
+        <!-- Quick instructions for player controls -->
+        <div id="controls">
+            WASD or Arrow Keys to move | SPACE to punch | E to kick | Q to grab/throw | SHIFT to dodge | F to use special
+        </div>
+    </div>
+
+    <script>
+        // Retrieve canvas and UI element references from the DOM
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const healthDisplay = document.getElementById('health');
+        const scoreDisplay = document.getElementById('score');
+        const weaponDisplay = document.getElementById('weapon');
+        const specialFill = document.getElementById('special-fill');
+        
+        // Basic gameplay constants for movement, damage, etc.
+        const PLAYER_SIZE = 24;
+        const ENEMY_SIZE = 24;
+        const PLAYER_SPEED = 3.5;
+        const ENEMY_SPEED_BASE = 1.5;
+        const PUNCH_RANGE = 30;
+        const PUNCH_DAMAGE = 25;
+        const KICK_RANGE = 40;
+        const KICK_DAMAGE = 35;
+        const KICK_COOLDOWN = 500; // milliseconds
+        const PUNCH_COOLDOWN = 300; // milliseconds
+        const GRAB_RANGE = 35;
+        const GRAB_COOLDOWN = 800; // milliseconds
+        const THROW_DAMAGE = 40;
+        const DODGE_COOLDOWN = 1000; // milliseconds
+        const DODGE_DURATION = 300; // milliseconds
+        const DODGE_DISTANCE = 20;
+        const ENEMY_DAMAGE_BASE = 5;
+        const ENEMY_ATTACK_COOLDOWN = 500; // milliseconds
+        const SPECIAL_ATTACK_COST = 100; // Full meter is 100
+        
+        // The player object stores all player properties
+        let player = {
+            x: canvas.width / 2,
+            y: canvas.height / 2,
+            size: PLAYER_SIZE,
+            speed: PLAYER_SPEED,
+            health: 100,
+            maxHealth: 100,
+            punchCooldown: 0,
+            kickCooldown: 0,
+            grabCooldown: 0,
+            dodgeCooldown: 0,
+            specialMeter: 0, // Value between 0 and 100
+            isAttacking: false,
+            attackType: null,
+            isDodging: false,
+            dodgeTimer: 0,
+            isGrabbing: false,
+            grabbedEnemy: null,
+            // Direction helps decide which way the player is facing
+            direction: { x: 0, y: 1 },
+            weapon: null,
+            weaponDamage: 0,
+            invincibleTimer: 0,
+            speedBoostTimer: 0,
+            damageBoostTimer: 0
+        };
+        
+        // Configurations for each type of enemy, including color and stats
+        const ENEMY_TYPES = {
+            REGULAR: {
+                color: '#e74c3c',
+                health: 100,
+                damage: ENEMY_DAMAGE_BASE,
+                speed: ENEMY_SPEED_BASE,
+                size: ENEMY_SIZE,
+                points: 1 // Points awarded on defeat
+            },
+            BRUISER: {
+                color: '#8e44ad',
+                health: 150,
+                damage: ENEMY_DAMAGE_BASE * 1.5,
+                speed: ENEMY_SPEED_BASE * 0.7,
+                size: ENEMY_SIZE * 1.3,
+                specialAttack: 'charge',
+                chargeCooldown: 3000,
+                points: 2
+            },
+            BOSS: {
+                color: '#f39c12',
+                health: 300,
+                damage: ENEMY_DAMAGE_BASE * 2,
+                speed: ENEMY_SPEED_BASE * 0.6,
+                size: ENEMY_SIZE * 2,
+                specialAttack: 'shockwave',
+                shockwaveCooldown: 5000,
+                points: 10
+            }
+        };
+        
+        // Configurations for different weapons the player can pick up
+        const WEAPON_TYPES = {
+            BOTTLE: {
+                name: 'Bottle',
+                damage: 20,
+                range: 35,
+                color: '#87CEFA',
+                uses: 2
+            },
+            CHAIR: {
+                name: 'Chair',
+                damage: 35,
+                range: 40,
+                color: '#CD853F',
+                uses: 3
+            },
+            POOL_CUE: {
+                name: 'Pool Cue',
+                damage: 25,
+                range: 50,
+                color: '#8B4513',
+                uses: 4
+            }
+        };
+        
+        // Configurations for power-up items
+        const POWERUP_TYPES = {
+            HEALTH: {
+                name: 'Health Pack',
+                color: '#3498db',
+                effect: 'health',
+                value: 30 // How much health to restore
+            },
+            SPEED: {
+                name: 'Speed Boost',
+                color: '#2ecc71',
+                effect: 'speed',
+                value: 1.5, // Speed multiplier
+                duration: 5000 // Duration in ms
+            },
+            DAMAGE: {
+                name: 'Damage Boost',
+                color: '#e74c3c',
+                effect: 'damage',
+                value: 1.5, // Damage multiplier
+                duration: 5000
+            }
+        };
+        
+        // Configurations for furniture objects like tables, walls, etc.
+        const FURNITURE_TYPES = {
+            TABLE: {
+                color: '#8B4513',
+                breakable: true,
+                health: 50
+            },
+            BAR: {
+                color: '#A0522D',
+                breakable: false
+            },
+            WALL: {
+                color: '#424242',
+                breakable: false
+            },
+            POOL_TABLE: {
+                color: '#006400',
+                breakable: false
+            }
+        };
+        
+        // Array of furniture objects positioned around the map
+        let furniture = [
+            // Outer walls
+            { x: 10, y: 10, width: 780, height: 20, type: 'WALL', breakable: false, color: FURNITURE_TYPES.WALL.color },
+            { x: 10, y: 570, width: 780, height: 20, type: 'WALL', breakable: false, color: FURNITURE_TYPES.WALL.color },
+            { x: 10, y: 30, width: 20, height: 540, type: 'WALL', breakable: false, color: FURNITURE_TYPES.WALL.color },
+            { x: 770, y: 30, width: 20, height: 540, type: 'WALL', breakable: false, color: FURNITURE_TYPES.WALL.color },
+            
+            // Room dividers
+            { x: 550, y: 50, width: 10, height: 500, type: 'WALL', breakable: false, color: FURNITURE_TYPES.WALL.color },
+            { x: 550, y: 300, width: 200, height: 10, type: 'WALL', breakable: false, color: FURNITURE_TYPES.WALL.color },
+            
+            // Doorways (non-collidable sections for movement)
+            { x: 550, y: 150, width: 10, height: 60, type: 'DOORWAY', breakable: false, color: 'rgba(0,0,0,0)' },
+            { x: 550, y: 400, width: 10, height: 60, type: 'DOORWAY', breakable: false, color: 'rgba(0,0,0,0)' },
+            
+            // Bar counter along the bottom section
+            { x: 50, y: 450, width: 300, height: 20, type: 'BAR', breakable: false, color: FURNITURE_TYPES.BAR.color },
+            { x: 350, y: 450, width: 20, height: 100, type: 'BAR', breakable: false, color: FURNITURE_TYPES.BAR.color },
+            
+            // Tables placed around the main area
+            { x: 100, y: 100, width: 60, height: 60, type: 'TABLE', breakable: true, health: FURNITURE_TYPES.TABLE.health, color: FURNITURE_TYPES.TABLE.color, initialColor: FURNITURE_TYPES.TABLE.color },
+            { x: 250, y: 150, width: 60, height: 60, type: 'TABLE', breakable: true, health: FURNITURE_TYPES.TABLE.health, color: FURNITURE_TYPES.TABLE.color, initialColor: FURNITURE_TYPES.TABLE.color },
+            { x: 400, y: 100, width: 60, height: 60, type: 'TABLE', breakable: true, health: FURNITURE_TYPES.TABLE.health, color: FURNITURE_TYPES.TABLE.color, initialColor: FURNITURE_TYPES.TABLE.color },
+            { x: 150, y: 250, width: 60, height: 60, type: 'TABLE', breakable: true, health: FURNITURE_TYPES.TABLE.health, color: FURNITURE_TYPES.TABLE.color, initialColor: FURNITURE_TYPES.TABLE.color },
+            { x: 350, y: 300, width: 60, height: 60, type: 'TABLE', breakable: true, health: FURNITURE_TYPES.TABLE.health, color: FURNITURE_TYPES.TABLE.color, initialColor: FURNITURE_TYPES.TABLE.color },
+            
+            // A large pool table to the right
+            { x: 600, y: 100, width: 100, height: 180, type: 'POOL_TABLE', breakable: false, color: FURNITURE_TYPES.POOL_TABLE.color }
+        ];
+        
+        // Array of items (weapons or powerups) dropped or placed around the map
+        let pickups = [];
+        
+        // Array to hold particle effects (dust, hits, etc.)
+        let particles = [];
+        
+        // Enemy list
+        let enemies = [];
+        const MAX_ENEMIES = 12;
+        const BOSS_THRESHOLD = 20; // Score threshold for potentially spawning a boss
+        let score = 0;
+        let bossSpawned = false;
+        
+        // Array for blood splatters to remain on the floor
+        let splatters = [];
+        
+        // Track pressed keys
+        let keys = {};
+        
+        // Game flow state variables
+        let gameOver = false;
+        let gameTime = 0;
+        let lastEnemySpawn = 0;
+        let spawnRate = 3000; // milliseconds between spawns
+        let waveNumber = 1;
+        
+        // Listen for keyboard presses
+        window.addEventListener('keydown', (e) => {
+            keys[e.key] = true;
+            
+            // Prevent the browser from scrolling with arrow keys or space
+            if(["Space", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].indexOf(e.code) > -1) {
+                e.preventDefault();
+            }
+            
+            // Space to punch (if not attacking/dodging/grabbing)
+            if (e.key === ' ' && player.punchCooldown <= 0 && !player.isAttacking && !player.isDodging && !player.isGrabbing) {
+                player.isAttacking = true;
+                player.attackType = 'punch';
+                player.punchCooldown = PUNCH_COOLDOWN;
+                attack('punch');
+            }
+            
+            // E to kick
+            if (e.key === 'e' && player.kickCooldown <= 0 && !player.isAttacking && !player.isDodging && !player.isGrabbing) {
+                player.isAttacking = true;
+                player.attackType = 'kick';
+                player.kickCooldown = KICK_COOLDOWN;
+                attack('kick');
+            }
+            
+            // Q to grab or throw if already grabbing
+            if (e.key === 'q' && player.grabCooldown <= 0 && !player.isAttacking && !player.isDodging) {
+                if (player.isGrabbing) {
+                    // Throw the currently grabbed enemy
+                    throwGrabbedEnemy();
+                } else {
+                    // Attempt to grab an enemy
+                    grabEnemy();
+                }
+            }
+            
+            // SHIFT (or C) to dodge
+            if ((e.key === 'Shift' || e.key === 'c') && player.dodgeCooldown <= 0 && !player.isAttacking && !player.isDodging && !player.isGrabbing) {
+                player.isDodging = true;
+                player.dodgeTimer = DODGE_DURATION;
+                player.dodgeCooldown = DODGE_COOLDOWN;
+                
+                // Determine dodge direction based on movement or facing direction
+                let dodgeX = 0;
+                let dodgeY = 0;
+                
+                if (keys['w'] || keys['ArrowUp']) dodgeY = -1;
+                if (keys['s'] || keys['ArrowDown']) dodgeY = 1;
+                if (keys['a'] || keys['ArrowLeft']) dodgeX = -1;
+                if (keys['d'] || keys['ArrowRight']) dodgeX = 1;
+                
+                // If not moving, dodge in the direction faced
+                if (dodgeX === 0 && dodgeY === 0) {
+                    dodgeX = player.direction.x;
+                    dodgeY = player.direction.y;
+                }
+                
+                // Normalize diagonal dodges
+                const dodgeLength = Math.sqrt(dodgeX * dodgeX + dodgeY * dodgeY);
+                if (dodgeLength > 0) {
+                    dodgeX /= dodgeLength;
+                    dodgeY /= dodgeLength;
+                }
+                
+                // Attempt to move the player to the dodge position
+                let newX = player.x + dodgeX * DODGE_DISTANCE;
+                let newY = player.y + dodgeY * DODGE_DISTANCE;
+                
+                // Check for collision before confirming new position
+                if (!checkCollision({
+                    x: newX - player.size/2,
+                    y: newY - player.size/2,
+                    width: player.size,
+                    height: player.size
+                })) {
+                    player.x = newX;
+                    player.y = newY;
+                }
+                
+                // Create a small particle effect to show the dodge
+                for (let i = 0; i < 10; i++) {
+                    particles.push({
+                        x: player.x,
+                        y: player.y,
+                        vx: -dodgeX * (Math.random() * 3 + 1),
+                        vy: -dodgeY * (Math.random() * 3 + 1),
+                        size: Math.random() * 5 + 2,
+                        color: 'rgba(200, 200, 255, 0.7)',
+                        life: Math.random() * 20 + 10
+                    });
+                }
+            }
+            
+            // F to use special attack if the meter is full
+            if (e.key === 'f' && player.specialMeter >= SPECIAL_ATTACK_COST && !player.isAttacking && !player.isDodging && !player.isGrabbing) {
+                useSpecialAttack();
+            }
+            
+            // R to restart after game over
+            if (e.key === 'r' && gameOver) {
+                resetGame();
+            }
+        });
+        
+        // Detect when keys are released
+        window.addEventListener('keyup', (e) => {
+            keys[e.key] = false;
+        });
+        
+        // Initialize the game by spawning enemies/pickups, then start loop
+        function init() {
+            spawnInitialEnemies();
+            spawnInitialPickups();
+            gameLoop();
+        }
+        
+        // The main game loop function continuously updating and drawing
+        function gameLoop() {
+            update();
+            draw();
+            requestAnimationFrame(gameLoop);
+        }
+        
+        // Update all game elements
+        function update() {
+            if (!gameOver) {
+                // If the player is not attacking or dodging, allow normal movement
+                if (!player.isAttacking && !player.isDodging) {
+                    movePlayer();
+                }
+                
+                // Various cooldowns and timers
+                updateTimers();
+                
+                // Enemy logic
+                updateEnemies();
+                
+                // If the player is grabbing an enemy, keep updating that enemy's position
+                if (player.isGrabbing) {
+                    updateGrabbedEnemy();
+                }
+                
+                // Particle system updates
+                updateParticles();
+            }
+        }
+        
+        // Spawn a few initial enemies
+        function spawnInitialEnemies() {
+            spawnEnemies(3, 'REGULAR');
+            spawnEnemies(1, 'BRUISER');
+        }
+        
+        // Spawn some initial pickups (weapons) around the map
+        function spawnInitialPickups() {
+            spawnPickup('BOTTLE', 150, 200);
+            spawnPickup('CHAIR', 400, 250);
+            spawnPickup('POOL_CUE', 650, 150);
+        }
+        
+        // Function to spawn a specific type of pickup (weapon or powerup) at x,y
+        // If no x,y provided, random positions are chosen
+        function spawnPickup(type, x, y) {
+            let pickup;
+            
+            // If the type is recognized as a weapon
+            if (WEAPON_TYPES[type]) {
+                pickup = {
+                    x: x || 100 + Math.random() * (canvas.width - 200),
+                    y: y || 100 + Math.random() * (canvas.height - 200),
+                    type: 'weapon',
+                    weaponType: type,
+                    size: 15,
+                    color: WEAPON_TYPES[type].color,
+                    name: WEAPON_TYPES[type].name,
+                    uses: WEAPON_TYPES[type].uses,
+                    damage: WEAPON_TYPES[type].damage,
+                    range: WEAPON_TYPES[type].range
+                };
+            } else if (POWERUP_TYPES[type]) {
+                // If the type is recognized as a powerup
+                pickup = {
+                    x: x || 100 + Math.random() * (canvas.width - 200),
+                    y: y || 100 + Math.random() * (canvas.height - 200),
+                    type: 'powerup',
+                    powerupType: type,
+                    size: 15,
+                    color: POWERUP_TYPES[type].color,
+                    name: POWERUP_TYPES[type].name,
+                    effect: POWERUP_TYPES[type].effect,
+                    value: POWERUP_TYPES[type].value,
+                    duration: POWERUP_TYPES[type].duration
+                };
+            }
+            
+            // Check if this pickup collides with furniture
+            if (!checkCollision({
+                x: pickup.x - pickup.size/2,
+                y: pickup.y - pickup.size/2,
+                width: pickup.size,
+                height: pickup.size
+            })) {
+                pickups.push(pickup);
+            } else {
+                // If it collides, try again in a different random spot
+                spawnPickup(type);
+            }
+        }
+        
+        // Spawn multiple enemies of a given type
+        // If type is 'RANDOM', the enemy type is chosen based on current score/wave
+        function spawnEnemies(count, type = 'RANDOM') {
+            for (let i = 0; i < count; i++) {
+                if (enemies.length < MAX_ENEMIES) {
+                    let enemyType;
+                    
+                    if (type === 'RANDOM') {
+                        // Random chance for BOSS if threshold is met, else REGULAR or BRUISER
+                        const roll = Math.random();
+                        if (score >= BOSS_THRESHOLD && !bossSpawned && roll < 0.1) {
+                            enemyType = 'BOSS';
+                            bossSpawned = true;
+                        } else if (roll < 0.7) {
+                            enemyType = 'REGULAR';
+                        } else {
+                            enemyType = 'BRUISER';
+                        }
+                    } else {
+                        enemyType = type;
+                    }
+                    
+                    const enemyTemplate = ENEMY_TYPES[enemyType];
+                    let validPosition = false;
+                    let newEnemy;
+                    
+                    // Keep searching for a valid (non-colliding) position
+                    while (!validPosition) {
+                        newEnemy = {
+                            x: 100 + Math.random() * (canvas.width - 200),
+                            y: 100 + Math.random() * (canvas.height - 200),
+                            size: enemyTemplate.size,
+                            speed: enemyTemplate.speed,
+                            health: enemyTemplate.health,
+                            maxHealth: enemyTemplate.health,
+                            damage: enemyTemplate.damage,
+                            attackCooldown: 0,
+                            color: enemyTemplate.color,
+                            type: enemyType,
+                            specialAttack: enemyTemplate.specialAttack,
+                            specialCooldown: 0,
+                            stunned: false,
+                            stunnedTimer: 0,
+                            points: enemyTemplate.points,
+                            direction: { x: 0, y: 0 }
+                        };
+                        
+                        // Extra properties for Bruiser or Boss
+                        if (enemyType === 'BRUISER') {
+                            newEnemy.chargeCooldown = enemyTemplate.chargeCooldown;
+                            newEnemy.isCharging = false;
+                            newEnemy.chargeDirection = { x: 0, y: 0 };
+                        } else if (enemyType === 'BOSS') {
+                            newEnemy.shockwaveCooldown = enemyTemplate.shockwaveCooldown;
+                            newEnemy.isShockwaving = false;
+                            newEnemy.shockwaveRadius = 0;
+                            newEnemy.maxShockwaveRadius = 150;
+                        }
+                        
+                        // Ensure the enemy doesn't spawn too close to the player
+                        const distToPlayer = Math.hypot(newEnemy.x - player.x, newEnemy.y - player.y);
+                        if (distToPlayer < 150) {
+                            continue;
+                        }
+                        
+                        // Check collision with furniture
+                        validPosition = !furniture.some(f => 
+                            rectCollision(
+                                { x: newEnemy.x - newEnemy.size/2, y: newEnemy.y - newEnemy.size/2, width: newEnemy.size, height: newEnemy.size },
+                                f
+                            )
+                        );
+                        
+                        // Check collision with existing enemies
+                        if (validPosition) {
+                            validPosition = !enemies.some(e => 
+                                circleCollision(
+                                    { x: newEnemy.x, y: newEnemy.y, radius: newEnemy.size/2 },
+                                    { x: e.x, y: e.y, radius: e.size/2 }
+                                )
+                            );
+                        }
+                    }
+                    
+                    // Add the newly spawned enemy to the array
+                    enemies.push(newEnemy);
+                    
+                    // Create a small particle effect where the enemy spawns
+                    for (let j = 0; j < 10; j++) {
+                        particles.push({
+                            x: newEnemy.x,
+                            y: newEnemy.y,
+                            vx: (Math.random() - 0.5) * 4,
+                            vy: (Math.random() - 0.5) * 4,
+                            size: Math.random() * 5 + 2,
+                            color: newEnemy.color,
+                            life: Math.random() * 30 + 10
+                        });
+                    }
+                }
+            }
+        }
+        
+        // The player performs an attack: punch, kick, or weapon-based
+        function attack(type) {
+            let range = PUNCH_RANGE;
+            let damage = PUNCH_DAMAGE;
+            
+            // If using a kick
+            if (type === 'kick') {
+                range = KICK_RANGE;
+                damage = KICK_DAMAGE;
+            } else if (player.weapon) {
+                // If holding a weapon
+                range = player.weapon.range;
+                damage = player.weapon.damage;
+            }
+            
+            // Check if we have a damage boost active
+            if (player.damageBoostTimer > 0) {
+                damage *= 1.5;
+            }
+            
+            // For each enemy, see if it's within attack range
+            enemies.forEach(enemy => {
+                // Stunned enemies can still be damaged
+                if (enemy.stunned) return; // If it's stunned, skip further logic
+                
+                const dist = Math.hypot(
+                    enemy.x - (player.x + player.direction.x * player.size),
+                    enemy.y - (player.y + player.direction.y * player.size)
+                );
+                
+                // If within range, apply damage and knockback
+                if (dist < range) {
+                    enemy.health -= damage;
+                    
+                    // Increase player special meter on successful hit
+                    player.specialMeter = Math.min(100, player.specialMeter + 5);
+                    updateSpecialMeter();
+                    
+                    // Knockback calculation
+                    const knockbackX = player.direction.x * (type === 'kick' ? 30 : 20);
+                    const knockbackY = player.direction.y * (type === 'kick' ? 30 : 20);
+                    
+                    let newX = enemy.x + knockbackX;
+                    let newY = enemy.y + knockbackY;
+                    
+                    // Check if the enemy collides with furniture after knockback
+                    const hitsFurniture = checkFurnitureCollision({
+                        x: newX - enemy.size/2,
+                        y: newY - enemy.size/2,
+                        width: enemy.size,
+                        height: enemy.size
+                    });
+                    
+                    if (!hitsFurniture.collides) {
+                        // If there's no collision, finalize new enemy position
+                        enemy.x = newX;
+                        enemy.y = newY;
+                    } else if (hitsFurniture.furniture && hitsFurniture.furniture.breakable) {
+                        // If furniture is breakable, damage the furniture
+                        damageFurniture(hitsFurniture.furniture, 10);
+                        // Also apply additional damage to the enemy
+                        enemy.health -= 10;
+                    }
+                    
+                    // Temporarily stun the enemy
+                    enemy.stunned = true;
+                    enemy.stunnedTimer = (type === 'kick') ? 600 : 300;
+                    
+                    // Create visual feedback for hits
+                    createHitEffect(enemy.x, enemy.y, type);
+                    createBloodSplatter(enemy.x, enemy.y, player.direction.x, player.direction.y);
+                    
+                    // If using a weapon, decrement its uses
+                    if (player.weapon) {
+                        player.weapon.uses--;
+                        // If the weapon runs out, break it
+                        if (player.weapon.uses <= 0) {
+                            createWeaponBreakEffect(player.x, player.y);
+                            player.weapon = null;
+                            weaponDisplay.textContent = 'Fists';
+                        }
+                    }
+                }
+            });
+            
+            // Also allow attacking furniture if it's breakable and in range
+            furniture.forEach(f => {
+                if (f.breakable) {
+                    const dist = pointRectDistance(
+                        player.x + player.direction.x * player.size,
+                        player.y + player.direction.y * player.size,
+                        f.x, f.y, f.width, f.height
+                    );
+                    
+                    if (dist < range) {
+                        damageFurniture(f, damage * 0.5);
+                    }
+                }
+            });
+        }
+        
+        // Attempt to grab a stunned enemy in close range
+        function grabEnemy() {
+            let closestEnemy = null;
+            let closestDist = GRAB_RANGE;
+            
+            enemies.forEach(enemy => {
+                // Only stunned, non-boss enemies can be grabbed
+                if (enemy.stunned && enemy.type !== 'BOSS') {
+                    const dist = Math.hypot(
+                        enemy.x - (player.x + player.direction.x * player.size),
+                        enemy.y - (player.y + player.direction.y * player.size)
+                    );
+                    
+                    // Keep track of the closest eligible enemy
+                    if (dist < closestDist) {
+                        closestDist = dist;
+                        closestEnemy = enemy;
+                    }
+                }
+            });
+            
+            // If we found a valid enemy to grab
+            if (closestEnemy) {
+                player.isGrabbing = true;
+                player.grabbedEnemy = closestEnemy;
+                player.grabCooldown = GRAB_COOLDOWN;
+                
+                // Temporarily remove the grabbed enemy from normal array
+                enemies = enemies.filter(e => e !== closestEnemy);
+                
+                // Create a small particle effect to show the grab
+                for (let i = 0; i < 10; i++) {
+                    particles.push({
+                        x: closestEnemy.x,
+                        y: closestEnemy.y,
+                        vx: (Math.random() - 0.5) * 3,
+                        vy: (Math.random() - 0.5) * 3,
+                        size: Math.random() * 4 + 1,
+                        color: 'rgba(255, 255, 255, 0.7)',
+                        life: Math.random() * 15 + 5
+                    });
+                }
+            }
+        }
+        
+        // Throw the currently grabbed enemy, applying damage/stun/collisions
+        function throwGrabbedEnemy() {
+            if (player.grabbedEnemy) {
+                const enemy = player.grabbedEnemy;
+                
+                // Calculate throw position in front of the player
+                const throwX = player.x + player.direction.x * 40;
+                const throwY = player.y + player.direction.y * 40;
+                
+                enemy.x = throwX;
+                enemy.y = throwY;
+                
+                // Check if the thrown enemy hits furniture
+                const hitsFurniture = checkFurnitureCollision({
+                    x: enemy.x - enemy.size/2,
+                    y: enemy.y - enemy.size/2,
+                    width: enemy.size,
+                    height: enemy.size
+                });
+                
+                if (hitsFurniture.collides && hitsFurniture.furniture.breakable) {
+                    damageFurniture(hitsFurniture.furniture, THROW_DAMAGE);
+                    enemy.health -= THROW_DAMAGE;
+                }
+                
+                // Check if the thrown enemy collides with another enemy
+                let hitEnemy = null;
+                enemies.forEach(e => {
+                    if (circleCollision(
+                        {x: enemy.x, y: enemy.y, radius: enemy.size/2},
+                        {x: e.x, y: e.y, radius: e.size/2}
+                    )) {
+                        hitEnemy = e;
+                    }
+                });
+                
+                if (hitEnemy) {
+                    // Both enemies take damage
+                    enemy.health -= THROW_DAMAGE * 0.7;
+                    hitEnemy.health -= THROW_DAMAGE;
+                    
+                    // Stun the enemy that got collided into
+                    hitEnemy.stunned = true;
+                    hitEnemy.stunnedTimer = 500;
+                    
+                    // Particles to show collision
+                    createCollisionEffect(hitEnemy.x, hitEnemy.y);
+                } else {
+                    // If no additional collision, still do partial damage to thrown enemy
+                    enemy.health -= THROW_DAMAGE * 0.5;
+                }
+                
+                // Stun the thrown enemy
+                enemy.stunned = true;
+                enemy.stunnedTimer = 800;
+                
+                // Put the enemy back into the normal array
+                enemies.push(enemy);
+                
+                // Show a throw effect
+                createThrowEffect(player.x, player.y, enemy.x, enemy.y);
+                
+                // Reset the player's grab state
+                player.isGrabbing = false;
+                player.grabbedEnemy = null;
+                
+                // Increase special meter a bit
+                player.specialMeter = Math.min(100, player.specialMeter + 10);
+                updateSpecialMeter();
+            }
+        }
+        
+        // The player uses a special area-of-effect attack
+        function useSpecialAttack() {
+            // Consumes the entire special meter
+            player.specialMeter = 0;
+            updateSpecialMeter();
+            
+            // A radial shockwave that expands outward over time
+            let radius = 0;
+            const maxRadius = 150;
+            const interval = setInterval(() => {
+                radius += 10;
+                
+                // Generate shockwave particles in a ring
+                for (let i = 0; i < 8; i++) {
+                    const angle = Math.random() * Math.PI * 2;
+                    particles.push({
+                        x: player.x + Math.cos(angle) * radius,
+                        y: player.y + Math.sin(angle) * radius,
+                        vx: Math.cos(angle) * 2,
+                        vy: Math.sin(angle) * 2,
+                        size: Math.random() * 8 + 4,
+                        color: 'rgba(255, 200, 50, 0.7)',
+                        life: Math.random() * 15 + 10
+                    });
+                }
+                
+                // Check all enemies in the expanding radius
+                enemies.forEach(enemy => {
+                    const dist = Math.hypot(enemy.x - player.x, enemy.y - player.y);
+                    // If the enemy is within the ring (between radius-10 and radius)
+                    if (dist < radius && dist >= radius - 10) {
+                        // Deal flat damage
+                        enemy.health -= 30;
+                        
+                        // Knock the enemy away from the player
+                        const angle = Math.atan2(enemy.y - player.y, enemy.x - player.x);
+                        const knockbackX = Math.cos(angle) * 50;
+                        const knockbackY = Math.sin(angle) * 50;
+                        
+                        let newX = enemy.x + knockbackX;
+                        let newY = enemy.y + knockbackY;
+                        
+                        // Check collision after knockback
+                        const hitsFurniture = checkFurnitureCollision({
+                            x: newX - enemy.size/2,
+                            y: newY - enemy.size/2,
+                            width: enemy.size,
+                            height: enemy.size
+                        });
+                        
+                        if (!hitsFurniture.collides) {
+                            enemy.x = newX;
+                            enemy.y = newY;
+                        } else if (hitsFurniture.furniture && hitsFurniture.furniture.breakable) {
+                            // If it hits breakable furniture, damage both
+                            damageFurniture(hitsFurniture.furniture, 15);
+                            enemy.health -= 15;
+                        }
+                        
+                        // Stun the enemy
+                        enemy.stunned = true;
+                        enemy.stunnedTimer = 1000;
+                        
+                        // Particles for a visual effect
+                        createHitEffect(enemy.x, enemy.y, 'special');
+                    }
+                });
+                
+                // Damage any breakable furniture in the shockwave ring
+                furniture.forEach(f => {
+                    if (f.breakable) {
+                        const dist = pointRectDistance(
+                            player.x, player.y,
+                            f.x + f.width/2, f.y + f.height/2, 0, 0
+                        );
+                        
+                        if (dist < radius && dist >= radius - 10) {
+                            damageFurniture(f, 20);
+                        }
+                    }
+                });
+                
+                // Stop expanding the shockwave once it reaches its maximum radius
+                if (radius >= maxRadius) {
+                    clearInterval(interval);
+                }
+            }, 50);
+        }
+        
+        // Damage a specific piece of furniture by a certain amount
+        function damageFurniture(targetFurniture, dmg) {
+            if (targetFurniture.breakable && targetFurniture.health) {
+                targetFurniture.health -= dmg;
+                
+                // Calculate remaining health percentage
+                const healthPercent = targetFurniture.health / FURNITURE_TYPES[targetFurniture.type]?.health;
+                if (healthPercent <= 0) {
+                    // Furniture breaks entirely
+                    createFurnitureBreakEffect(targetFurniture.x + targetFurniture.width/2, targetFurniture.y + targetFurniture.height/2, targetFurniture.color);
+                    
+                    // Remove the furniture from the array
+                    furniture = furniture.filter(f => f !== targetFurniture);
+                    
+                    // Chance to spawn a weapon or powerup from the broken furniture
+                    if (Math.random() < 0.3) {
+                        if (Math.random() < 0.7) {
+                            // Drop a random weapon
+                            const weaponTypes = Object.keys(WEAPON_TYPES);
+                            const randomWeapon = weaponTypes[Math.floor(Math.random() * weaponTypes.length)];
+                            spawnPickup(randomWeapon, targetFurniture.x + targetFurniture.width/2, targetFurniture.y + targetFurniture.height/2);
+                        } else {
+                            // Drop a random powerup
+                            const powerupTypes = Object.keys(POWERUP_TYPES);
+                            const randomPowerup = powerupTypes[Math.floor(Math.random() * powerupTypes.length)];
+                            spawnPickup(randomPowerup, targetFurniture.x + targetFurniture.width/2, targetFurniture.y + targetFurniture.height/2);
+                        }
+                    }
+                } else {
+                    // If not fully broken, darken the color to show damage
+                    targetFurniture.color = darkenColor(targetFurniture.initialColor, healthPercent);
+                    // Particle effect for damage
+                    createFurnitureDamageEffect(targetFurniture.x + targetFurniture.width/2, targetFurniture.y + targetFurniture.height/2, targetFurniture.color);
+                }
+            }
+        }
+        
+        // Creates a small effect to visualize a successful hit (punch/kick/etc.)
+        function createHitEffect(x, y, type) {
+            const particleCount = (type === 'special') ? 20 : 10;
+            const particleSize = (type === 'special') ? 8 : 5;
+            const particleLife = (type === 'special') ? 25 : 15;
+            // Color depends on the attack type
+            const particleColor = (type === 'special') ? 'rgba(255, 200, 0, 0.7)' : 
+                                 (type === 'kick') ? 'rgba(255, 150, 0, 0.7)' : 
+                                 'rgba(255, 255, 200, 0.7)';
+            
+            // Generate hit particles
+            for (let i = 0; i < particleCount; i++) {
+                particles.push({
+                    x: x,
+                    y: y,
+                    vx: (Math.random() - 0.5) * 4,
+                    vy: (Math.random() - 0.5) * 4,
+                    size: Math.random() * particleSize + 2,
+                    color: particleColor,
+                    life: Math.random() * particleLife + 10
+                });
+            }
+        }
+        
+        // Creates small red splatters to indicate blood from hits
+        function createBloodSplatter(x, y, dirX, dirY) {
+            const splatterCount = 5;
+            
+            for (let i = 0; i < splatterCount; i++) {
+                splatters.push({
+                    x: x + (Math.random() - 0.5) * 10,
+                    y: y + (Math.random() - 0.5) * 10,
+                    radius: Math.random() * 3 + 1,
+                    color: 'rgba(150, 0, 0, 0.7)'
+                });
+            }
+        }
+        
+        // Collision effect when enemies hit each other or furniture
+        function createCollisionEffect(x, y) {
+            for (let i = 0; i < 15; i++) {
+                particles.push({
+                    x: x,
+                    y: y,
+                    vx: (Math.random() - 0.5) * 5,
+                    vy: (Math.random() - 0.5) * 5,
+                    size: Math.random() * 6 + 3,
+                    color: 'rgba(255, 255, 0, 0.7)',
+                    life: Math.random() * 20 + 10
+                });
+            }
+        }
+        
+        // Visual effect for throwing an enemy, linking the start and end points
+        function createThrowEffect(startX, startY, endX, endY) {
+            const dirX = endX - startX;
+            const dirY = endY - startY;
+            const dist = Math.hypot(dirX, dirY);
+            const normDirX = dirX / dist;
+            const normDirY = dirY / dist;
+            
+            for (let i = 0; i < 10; i++) {
+                const t = i / 10;
+                particles.push({
+                    x: startX + dirX * t,
+                    y: startY + dirY * t,
+                    vx: normDirX * (Math.random() * 2 + 1) + (Math.random() - 0.5),
+                    vy: normDirY * (Math.random() * 2 + 1) + (Math.random() - 0.5),
+                    size: Math.random() * 4 + 2,
+                    color: 'rgba(200, 200, 255, 0.7)',
+                    life: Math.random() * 15 + 5
+                });
+            }
+        }
+        
+        // Small particle burst when furniture is damaged
+        function createFurnitureDamageEffect(x, y, color) {
+            for (let i = 0; i < 5; i++) {
+                particles.push({
+                    x: x,
+                    y: y,
+                    vx: (Math.random() - 0.5) * 3,
+                    vy: (Math.random() - 0.5) * 3,
+                    size: Math.random() * 4 + 2,
+                    color: color,
+                    life: Math.random() * 20 + 10
+                });
+            }
+        }
+        
+        // Larger effect for when furniture is completely destroyed
+        function createFurnitureBreakEffect(x, y, color) {
+            for (let i = 0; i < 15; i++) {
+                particles.push({
+                    x: x,
+                    y: y,
+                    vx: (Math.random() - 0.5) * 6,
+                    vy: (Math.random() - 0.5) * 6,
+                    size: Math.random() * 8 + 3,
+                    color: color,
+                    life: Math.random() * 30 + 15,
+                    gravity: 0.1,
+                    rotation: Math.random() * 360,
+                    rotationSpeed: (Math.random() - 0.5) * 10
+                });
+            }
+        }
+        
+        // Effect for when a weapon breaks from overuse
+        function createWeaponBreakEffect(x, y) {
+            const color = player.weapon ? player.weapon.color : '#FFFFFF';
+            
+            for (let i = 0; i < 15; i++) {
+                particles.push({
+                    x: x + player.direction.x * 20,
+                    y: y + player.direction.y * 20,
+                    vx: (Math.random() - 0.5) * 5 + player.direction.x * 2,
+                    vy: (Math.random() - 0.5) * 5 + player.direction.y * 2,
+                    size: Math.random() * 6 + 2,
+                    color: color,
+                    life: Math.random() * 25 + 15,
+                    gravity: 0.1
+                });
+            }
+        }
+        
+        // Process player movement based on keys pressed
+        function movePlayer() {
+            let dx = 0;
+            let dy = 0;
+            
+            // WASD or arrow inputs
+            if (keys['w'] || keys['ArrowUp']) dy = -1;
+            if (keys['s'] || keys['ArrowDown']) dy = 1;
+            if (keys['a'] || keys['ArrowLeft']) dx = -1;
+            if (keys['d'] || keys['ArrowRight']) dx = 1;
+            
+            // Normalize diagonal movement so speed is consistent
+            if (dx !== 0 && dy !== 0) {
+                dx *= 0.7071; // ~1/sqrt(2)
+                dy *= 0.7071;
+            }
+            
+            // Update facing direction only if the player is actually moving
+            if (dx !== 0 || dy !== 0) {
+                player.direction = { x: dx, y: dy };
+            }
+            
+            // Check for an active speed boost
+            let currentSpeed = player.speed;
+            if (player.speedBoostTimer > 0) {
+                currentSpeed *= 1.5;
+            }
+            
+            // Calculate the new X and Y positions
+            let newX = player.x + dx * currentSpeed;
+            let newY = player.y + dy * currentSpeed;
+            
+            // Check for collisions with furniture in the new position (X-axis)
+            if (!checkCollision({
+                x: newX - player.size/2,
+                y: player.y - player.size/2,
+                width: player.size,
+                height: player.size
+            })) {
+                player.x = newX;
+            }
+            
+            // Check collisions in the new Y position
+            if (!checkCollision({
+                x: player.x - player.size/2,
+                y: newY - player.size/2,
+                width: player.size,
+                height: player.size
+            })) {
+                player.y = newY;
+            }
+            
+            // After movement, check if the player is overlapping a pickup
+            checkPickups();
+        }
+        
+        // Check if the player can pick up any items
+        function checkPickups() {
+            for (let i = pickups.length - 1; i >= 0; i--) {
+                const pickup = pickups[i];
+                // Distance from player to pickup
+                const dist = Math.hypot(pickup.x - player.x, pickup.y - player.y);
+                
+                // If within collision range
+                if (dist < player.size/2 + pickup.size/2) {
+                    // Player obtains the pickup
+                    if (pickup.type === 'weapon') {
+                        // Equip the weapon
+                        player.weapon = {
+                            name: pickup.name,
+                            damage: pickup.damage,
+                            range: pickup.range,
+                            uses: pickup.uses,
+                            color: pickup.color
+                        };
+                        weaponDisplay.textContent = pickup.name;
+                    } else if (pickup.type === 'powerup') {
+                        // Apply the effect of the powerup
+                        if (pickup.effect === 'health') {
+                            player.health = Math.min(player.maxHealth, player.health + pickup.value);
+                            healthDisplay.textContent = player.health;
+                        } else if (pickup.effect === 'speed') {
+                            player.speedBoostTimer = pickup.duration;
+                        } else if (pickup.effect === 'damage') {
+                            player.damageBoostTimer = pickup.duration;
+                        }
+                    }
+                    
+                    // Show a small pickup effect with particles
+                    for (let j = 0; j < 15; j++) {
+                        particles.push({
+                            x: pickup.x,
+                            y: pickup.y,
+                            vx: (Math.random() - 0.5) * 3,
+                            vy: (Math.random() - 0.5) * 3 - 1,
+                            size: Math.random() * 5 + 2,
+                            color: pickup.color,
+                            life: Math.random() * 20 + 10
+                        });
+                    }
+                    
+                    // Remove the pickup from the map
+                    pickups.splice(i, 1);
+                }
+            }
+        }
+        
+        // Keep a grabbed enemy directly in front of the player
+        function updateGrabbedEnemy() {
+            if (player.isGrabbing && player.grabbedEnemy) {
+                player.grabbedEnemy.x = player.x + player.direction.x * player.size;
+                player.grabbedEnemy.y = player.y + player.direction.y * player.size;
+            }
+        }
+        
+        // Enemy behavior, includes movement, attacks, special abilities, etc.
+        function updateEnemies() {
+            for (let i = enemies.length - 1; i >= 0; i--) {
+                let enemy = enemies[i];
+                
+                // If enemy health has dropped to or below 0, it dies
+                if (enemy.health <= 0) {
+                    // Death particles
+                    for (let j = 0; j < 20; j++) {
+                        particles.push({
+                            x: enemy.x,
+                            y: enemy.y,
+                            vx: (Math.random() - 0.5) * 4,
+                            vy: (Math.random() - 0.5) * 4,
+                            size: Math.random() * 6 + 3,
+                            color: enemy.color,
+                            life: Math.random() * 30 + 15
+                        });
+                    }
+                    
+                    // Blood splatter on floor
+                    for (let j = 0; j < 10; j++) {
+                        splatters.push({
+                            x: enemy.x + (Math.random() - 0.5) * 20,
+                            y: enemy.y + (Math.random() - 0.5) * 20,
+                            radius: Math.random() * 5 + 2,
+                            color: 'rgba(150, 0, 0, 0.7)'
+                        });
+                    }
+                    
+                    // Increase the player's score
+                    score += enemy.points;
+                    scoreDisplay.textContent = score;
+                    
+                    // Possibly drop a powerup
+                    if (Math.random() < 0.3) {
+                        const powerupTypes = Object.keys(POWERUP_TYPES);
+                        const randomPowerup = powerupTypes[Math.floor(Math.random() * powerupTypes.length)];
+                        spawnPickup(randomPowerup, enemy.x, enemy.y);
+                    }
+                    
+                    // Remove the enemy from the array
+                    enemies.splice(i, 1);
+                    
+                    // Increase special meter a bit for a kill
+                    player.specialMeter = Math.min(100, player.specialMeter + 15);
+                    updateSpecialMeter();
+                    
+                    // If no enemies left, start a new wave
+                    if (enemies.length === 0) {
+                        startNewWave();
+                    } else if (Math.random() < 0.5) {
+                        // Sometimes spawn an additional enemy after one is defeated
+                        setTimeout(() => {
+                            if (enemies.length < MAX_ENEMIES) {
+                                spawnEnemies(1, 'RANDOM');
+                            }
+                        }, 2000);
+                    }
+                    continue;
+                }
+                
+                // Handle stunned enemies
+                if (enemy.stunned) {
+                    enemy.stunnedTimer -= 16.67; // approximate for 60 FPS
+                    if (enemy.stunnedTimer <= 0) {
+                        enemy.stunned = false;
+                    }
+                    continue; // Stunned enemies skip normal AI
+                }
+                
+                // Attack cooldown (time between attacks)
+                if (enemy.attackCooldown > 0) {
+                    enemy.attackCooldown -= 16.67;
+                }
+                
+                // Handle special attacks if the enemy type has one
+                if (enemy.specialAttack) {
+                    if (enemy.type === 'BRUISER') {
+                        // Bruiser uses charge attack
+                        if (enemy.chargeCooldown > 0) {
+                            enemy.chargeCooldown -= 16.67;
+                        }
+                        
+                        if (enemy.isCharging) {
+                            // Increase speed in the charge direction
+                            let newX = enemy.x + enemy.chargeDirection.x * enemy.speed * 2.5;
+                            let newY = enemy.y + enemy.chargeDirection.y * enemy.speed * 2.5;
+                            
+                            // Check collision with furniture
+                            const hitsFurniture = checkFurnitureCollision({
+                                x: newX - enemy.size/2,
+                                y: newY - enemy.size/2,
+                                width: enemy.size,
+                                height: enemy.size
+                            });
+                            
+                            if (!hitsFurniture.collides) {
+                                enemy.x = newX;
+                                enemy.y = newY;
+                                
+                                // If player is in collision range during charge, deal damage
+                                const distToPlayer = Math.hypot(player.x - enemy.x, player.y - enemy.y);
+                                if (distToPlayer < player.size/2 + enemy.size/2 && player.invincibleTimer <= 0 && !player.isDodging) {
+                                    // Impact with the player causes extra damage
+                                    player.health -= enemy.damage * 1.5;
+                                    healthDisplay.textContent = player.health;
+                                    
+                                    // Particles for visual effect
+                                    createHitEffect(player.x, player.y, 'punch');
+                                    
+                                    // If player health hits zero, game over
+                                    if (player.health <= 0) {
+                                        gameOver = true;
+                                    }
+                                    
+                                    // Stop the charge
+                                    enemy.isCharging = false;
+                                }
+                            } else {
+                                // If the charge hits furniture
+                                enemy.isCharging = false;
+                                
+                                // If it is breakable, damage it
+                                if (hitsFurniture.furniture && hitsFurniture.furniture.breakable) {
+                                    damageFurniture(hitsFurniture.furniture, 30);
+                                }
+                                
+                                // Collision effect
+                                createCollisionEffect(enemy.x, enemy.y);
+                            }
+                            
+                            // Charge ends after some time
+                            enemy.chargeTimer -= 16.67;
+                            if (enemy.chargeTimer <= 0) {
+                                enemy.isCharging = false;
+                            }
+                            
+                            // Skip normal movement while charging
+                            continue;
+                        } else if (enemy.chargeCooldown <= 0) {
+                            // If not charging, decide whether to start a charge
+                            const distToPlayer = Math.hypot(player.x - enemy.x, player.y - enemy.y);
+                            if (distToPlayer < 200 && distToPlayer > 50) {
+                                // Aim towards the player and begin charge
+                                const dx = player.x - enemy.x;
+                                const dy = player.y - enemy.y;
+                                const dist = Math.hypot(dx, dy);
+                                
+                                enemy.chargeDirection = {
+                                    x: dx / dist,
+                                    y: dy / dist
+                                };
+                                
+                                enemy.isCharging = true;
+                                enemy.chargeTimer = 1000;
+                                enemy.chargeCooldown = ENEMY_TYPES.BRUISER.chargeCooldown;
+                                
+                                // Particles to show a charging effect
+                                for (let j = 0; j < 15; j++) {
+                                    particles.push({
+                                        x: enemy.x,
+                                        y: enemy.y,
+                                        vx: (Math.random() - 0.5) * 3,
+                                        vy: (Math.random() - 0.5) * 3,
+                                        size: Math.random() * 5 + 2,
+                                        color: 'rgba(150, 50, 200, 0.6)',
+                                        life: Math.random() * 15 + 10
+                                    });
+                                }
+                                
+                                // Skip normal movement if beginning a charge
+                                continue;
+                            }
+                        }
+                    } else if (enemy.type === 'BOSS') {
+                        // Boss uses shockwave
+                        if (enemy.shockwaveCooldown > 0) {
+                            enemy.shockwaveCooldown -= 16.67;
+                        }
+                        
+                        if (enemy.isShockwaving) {
+                            // Expand the shockwave radius over time
+                            enemy.shockwaveRadius += 5;
+                            
+                            // Particle effect around the boss in a ring
+                            for (let j = 0; j < 8; j++) {
+                                const angle = Math.random() * Math.PI * 2;
+                                particles.push({
+                                    x: enemy.x + Math.cos(angle) * enemy.shockwaveRadius,
+                                    y: enemy.y + Math.sin(angle) * enemy.shockwaveRadius,
+                                    vx: Math.cos(angle) * 1,
+                                    vy: Math.sin(angle) * 1,
+                                    size: Math.random() * 6 + 3,
+                                    color: 'rgba(255, 150, 0, 0.6)',
+                                    life: Math.random() * 10 + 5
+                                });
+                            }
+                            
+                            // Check if the player is caught in the ring
+                            const distToPlayer = Math.hypot(player.x - enemy.x, player.y - enemy.y);
+                            if (distToPlayer < enemy.shockwaveRadius + 10 && distToPlayer > enemy.shockwaveRadius - 10 && player.invincibleTimer <= 0 && !player.isDodging) {
+                                // Deal damage
+                                player.health -= 15;
+                                healthDisplay.textContent = player.health;
+                                
+                                // Knock the player back
+                                const angle = Math.atan2(player.y - enemy.y, player.x - enemy.x);
+                                const knockbackX = Math.cos(angle) * 30;
+                                const knockbackY = Math.sin(angle) * 30;
+                                
+                                let newPlayerX = player.x + knockbackX;
+                                let newPlayerY = player.y + knockbackY;
+                                
+                                // Check collisions for the new player position
+                                if (!checkCollision({
+                                    x: newPlayerX - player.size/2,
+                                    y: newPlayerY - player.size/2,
+                                    width: player.size,
+                                    height: player.size
+                                })) {
+                                    player.x = newPlayerX;
+                                    player.y = newPlayerY;
+                                }
+                                
+                                createHitEffect(player.x, player.y, 'special');
+                                if (player.health <= 0) {
+                                    gameOver = true;
+                                }
+                            }
+                            
+                            // End the shockwave once it reaches max radius
+                            if (enemy.shockwaveRadius >= enemy.maxShockwaveRadius) {
+                                enemy.isShockwaving = false;
+                                enemy.shockwaveRadius = 0;
+                            }
+                            
+                            // Skip normal movement
+                            continue;
+                        } else if (enemy.shockwaveCooldown <= 0) {
+                            // Boss may initiate shockwave if player is relatively near
+                            const distToPlayer = Math.hypot(player.x - enemy.x, player.y - enemy.y);
+                            if (distToPlayer < 200) {
+                                enemy.isShockwaving = true;
+                                enemy.shockwaveRadius = 0;
+                                enemy.shockwaveCooldown = ENEMY_TYPES.BOSS.shockwaveCooldown;
+                                
+                                // Particle effect to show the boss powering up
+                                for (let j = 0; j < 20; j++) {
+                                    particles.push({
+                                        x: enemy.x,
+                                        y: enemy.y,
+                                        vx: (Math.random() - 0.5) * 4,
+                                        vy: (Math.random() - 0.5) * 4,
+                                        size: Math.random() * 8 + 4,
+                                        color: 'rgba(255, 150, 0, 0.8)',
+                                        life: Math.random() * 20 + 10
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                // Simple chase AI if the player is within a certain range
+                const dx = player.x - enemy.x;
+                const dy = player.y - enemy.y;
+                const dist = Math.hypot(dx, dy);
+                if (dist > 0) {
+                    // Normalize direction to player
+                    enemy.direction = {
+                        x: dx / dist,
+                        y: dy / dist
+                    };
+                }
+                
+                // If within 300px, chase
+                if (dist < 300) {
+                    let moveX = enemy.direction.x * enemy.speed;
+                    let moveY = enemy.direction.y * enemy.speed;
+                    
+                    let newX = enemy.x + moveX;
+                    let newY = enemy.y + moveY;
+                    
+                    // Avoid furniture collision horizontally
+                    if (!checkCollision({
+                        x: newX - enemy.size/2,
+                        y: enemy.y - enemy.size/2,
+                        width: enemy.size,
+                        height: enemy.size
+                    })) {
+                        enemy.x = newX;
+                    }
+                    
+                    // Avoid furniture collision vertically
+                    if (!checkCollision({
+                        x: enemy.x - enemy.size/2,
+                        y: newY - enemy.size/2,
+                        width: enemy.size,
+                        height: enemy.size
+                    })) {
+                        enemy.y = newY;
+                    }
+                    
+                    // If close enough to attack the player
+                    if (dist < player.size/2 + enemy.size/2 + 5 && enemy.attackCooldown <= 0 && player.invincibleTimer <= 0 && !player.isDodging) {
+                        // Enemy damages the player
+                        player.health -= enemy.damage;
+                        enemy.attackCooldown = ENEMY_ATTACK_COOLDOWN;
+                        healthDisplay.textContent = player.health;
+                        
+                        // Visual effect
+                        createHitEffect(player.x, player.y, 'punch');
+                        // Check for game over
+                        if (player.health <= 0) {
+                            gameOver = true;
+                        }
+                    }
+                }
+            }
+        }
+        
+        // If the wave ends (no enemies left), start a new wave
+        function startNewWave() {
+            waveNumber++;
+            
+            // Increase difficulty by spawning more enemies
+            const enemyCount = Math.min(5 + waveNumber, MAX_ENEMIES);
+            
+            // Mostly regular, some bruisers
+            spawnEnemies(Math.floor(enemyCount * 0.7), 'REGULAR');
+            spawnEnemies(Math.floor(enemyCount * 0.3), 'BRUISER');
+            
+            // Chance to spawn a boss periodically
+            if (waveNumber % 3 === 0 && !bossSpawned) {
+                spawnEnemies(1, 'BOSS');
+            }
+            
+            // Possibly spawn a powerup
+            if (Math.random() < 0.7) {
+                const powerupTypes = Object.keys(POWERUP_TYPES);
+                const randomPowerup = powerupTypes[Math.floor(Math.random() * powerupTypes.length)];
+                spawnPickup(randomPowerup);
+            }
+            
+            // Possibly spawn a weapon
+            if (Math.random() < 0.7) {
+                const weaponTypes = Object.keys(WEAPON_TYPES);
+                const randomWeapon = weaponTypes[Math.floor(Math.random() * weaponTypes.length)];
+                spawnPickup(randomWeapon);
+            }
+        }
+        
+        // Update all cooldowns, timers, and game time
+        function updateTimers() {
+            // Punch cooldown
+            if (player.punchCooldown > 0) {
+                player.punchCooldown -= 16.67;
+                // Once cooldown ends, stop the "attacking" state if it was a punch
+                if (player.punchCooldown <= 0 && player.isAttacking && player.attackType === 'punch') {
+                    player.isAttacking = false;
+                }
+            }
+            
+            // Kick cooldown
+            if (player.kickCooldown > 0) {
+                player.kickCooldown -= 16.67;
+                // Once cooldown ends, stop the "attacking" state if it was a kick
+                if (player.kickCooldown <= 0 && player.isAttacking && player.attackType === 'kick') {
+                    player.isAttacking = false;
+                }
+            }
+            
+            // Grab cooldown (time between grabs)
+            if (player.grabCooldown > 0) {
+                player.grabCooldown -= 16.67;
+            }
+            
+            // Dodge cooldown
+            if (player.dodgeCooldown > 0) {
+                player.dodgeCooldown -= 16.67;
+            }
+            // Dodge timer (how long the dodge state lasts)
+            if (player.dodgeTimer > 0) {
+                player.dodgeTimer -= 16.67;
+                if (player.dodgeTimer <= 0) {
+                    player.isDodging = false;
+                }
+            }
+            
+            // Invincibility timer, speed boost, damage boost, etc.
+            if (player.invincibleTimer > 0) {
+                player.invincibleTimer -= 16.67;
+            }
+            if (player.speedBoostTimer > 0) {
+                player.speedBoostTimer -= 16.67;
+            }
+            if (player.damageBoostTimer > 0) {
+                player.damageBoostTimer -= 16.67;
+            }
+            
+            // Advance the game timer
+            gameTime += 16.67;
+            // If enough time has passed, spawn a random enemy
+            if (gameTime - lastEnemySpawn > spawnRate && enemies.length < MAX_ENEMIES) {
+                spawnEnemies(1, 'RANDOM');
+                lastEnemySpawn = gameTime;
+                // Adjust spawn rate to become faster over time
+                spawnRate = Math.max(1500, 3000 - waveNumber * 200);
+            }
+        }
+        
+        // Update all particle positions, remove them when life runs out
+        function updateParticles() {
+            for (let i = particles.length - 1; i >= 0; i--) {
+                const particle = particles[i];
+                // Move particle
+                particle.x += particle.vx;
+                particle.y += particle.vy;
+                
+                // If the particle has gravity, apply it
+                if (particle.gravity) {
+                    particle.vy += particle.gravity;
+                }
+                // If the particle has rotation, increment it
+                if (particle.rotation !== undefined) {
+                    particle.rotation += (particle.rotationSpeed || 0);
+                }
+                
+                // Decrement life
+                particle.life--;
+                // Remove if life is finished
+                if (particle.life <= 0) {
+                    particles.splice(i, 1);
+                }
+            }
+        }
+        
+        // Update the special meter UI
+        function updateSpecialMeter() {
+            specialFill.style.width = player.specialMeter + '%';
+        }
+        
+        // Redraw everything in the canvas
+        function draw() {
+            // Clear the entire canvas
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            // Draw lingering blood splatters first so that new objects render above them
+            splatters.forEach(splatter => {
+                ctx.fillStyle = splatter.color;
+                ctx.beginPath();
+                ctx.arc(splatter.x, splatter.y, splatter.radius, 0, Math.PI * 2);
+                ctx.fill();
+            });
+            
+            // Draw pickups (weapons, powerups)
+            pickups.forEach(pickup => {
+                // Main circle
+                ctx.fillStyle = pickup.color;
+                ctx.beginPath();
+                ctx.arc(pickup.x, pickup.y, pickup.size/2, 0, Math.PI * 2);
+                ctx.fill();
+                
+                // A glow effect around it
+                ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
+                ctx.beginPath();
+                ctx.arc(
+                    pickup.x,
+                    pickup.y,
+                    pickup.size/2 + 3 + Math.sin(gameTime / 200) * 2,
+                    0,
+                    Math.PI * 2
+                );
+                ctx.fill();
+                
+                // Label text
+                ctx.fillStyle = 'white';
+                ctx.font = '10px Arial';
+                ctx.textAlign = 'center';
+                ctx.fillText(pickup.name, pickup.x, pickup.y - pickup.size/2 - 5);
+            });
+            
+            // Draw furniture rectangles (tables, bars, walls)
+            furniture.forEach(f => {
+                ctx.fillStyle = f.color;
+                ctx.fillRect(f.x, f.y, f.width, f.height);
+            });
+            
+            // Draw enemies
+            enemies.forEach(enemy => {
+                // If the enemy is stunned, make it semi-transparent
+                if (enemy.stunned) {
+                    ctx.fillStyle = 'rgba(' + hexToRgb(enemy.color) + ', 0.5)';
+                } else {
+                    ctx.fillStyle = enemy.color;
+                }
+                // Draw the enemy as a circle
+                ctx.beginPath();
+                ctx.arc(enemy.x, enemy.y, enemy.size/2, 0, Math.PI * 2);
+                ctx.fill();
+                
+                // Direction indicator line from the center
+                ctx.strokeStyle = 'white';
+                ctx.beginPath();
+                ctx.moveTo(enemy.x, enemy.y);
+                ctx.lineTo(
+                    enemy.x + enemy.direction.x * enemy.size/2,
+                    enemy.y + enemy.direction.y * enemy.size/2
+                );
+                ctx.stroke();
+                
+                // Show special attack indicators if charging or shockwaving
+                if (enemy.isCharging) {
+                    ctx.strokeStyle = '#8e44ad';
+                    ctx.setLineDash([5, 3]);
+                    ctx.beginPath();
+                    ctx.moveTo(enemy.x, enemy.y);
+                    ctx.lineTo(
+                        enemy.x + enemy.chargeDirection.x * 50,
+                        enemy.y + enemy.chargeDirection.y * 50
+                    );
+                    ctx.stroke();
+                    ctx.setLineDash([]);
+                } else if (enemy.isShockwaving) {
+                    // Boss shockwave circle
+                    ctx.strokeStyle = 'rgba(255, 150, 0, 0.7)';
+                    ctx.lineWidth = 3;
+                    ctx.beginPath();
+                    ctx.arc(enemy.x, enemy.y, enemy.shockwaveRadius, 0, Math.PI * 2);
+                    ctx.stroke();
+                    ctx.lineWidth = 1;
+                }
+                
+                // Draw a small health bar above the enemy
+                const healthWidth = enemy.size * (enemy.health / enemy.maxHealth);
+                ctx.fillStyle = 'red';
+                ctx.fillRect(
+                    enemy.x - enemy.size/2,
+                    enemy.y - enemy.size - 5,
+                    enemy.size,
+                    3
+                );
+                ctx.fillStyle = 'green';
+                ctx.fillRect(
+                    enemy.x - enemy.size/2,
+                    enemy.y - enemy.size - 5,
+                    healthWidth,
+                    3
+                );
+            });
+            
+            // If the player is currently grabbing an enemy, draw that enemy in front
+            if (player.isGrabbing && player.grabbedEnemy) {
+                const enemy = player.grabbedEnemy;
+                ctx.fillStyle = 'rgba(' + hexToRgb(enemy.color) + ', 0.7)';
+                ctx.beginPath();
+                ctx.arc(enemy.x, enemy.y, enemy.size/2, 0, Math.PI * 2);
+                ctx.fill();
+                
+                // Small health bar for the grabbed enemy
+                const healthWidth = enemy.size * (enemy.health / enemy.maxHealth);
+                ctx.fillStyle = 'red';
+                ctx.fillRect(
+                    enemy.x - enemy.size/2,
+                    enemy.y - enemy.size - 5,
+                    enemy.size,
+                    3
+                );
+                ctx.fillStyle = 'green';
+                ctx.fillRect(
+                    enemy.x - enemy.size/2,
+                    enemy.y - enemy.size - 5,
+                    healthWidth,
+                    3
+                );
+                
+                // Draw a dashed line to indicate the grab connection
+                ctx.strokeStyle = 'white';
+                ctx.setLineDash([3, 3]);
+                ctx.beginPath();
+                ctx.moveTo(player.x, player.y);
+                ctx.lineTo(enemy.x, enemy.y);
+                ctx.stroke();
+                ctx.setLineDash([]);
+            }
+            
+            // Draw the player character
+            // If the player has any special states, change color/opacity
+            if (player.invincibleTimer > 0) {
+                // Flash a golden aura if invincible
+                ctx.fillStyle = 'rgba(255, 215, 0, ' + (0.5 + Math.sin(gameTime / 50) * 0.5) + ')';
+                ctx.beginPath();
+                ctx.arc(player.x, player.y, player.size/2 + 5, 0, Math.PI * 2);
+                ctx.fill();
+            }
+            
+            if (player.isDodging) {
+                // Make the player semi-transparent during dodge
+                ctx.fillStyle = 'rgba(0, 100, 255, 0.5)';
+            } else if (player.damageBoostTimer > 0) {
+                // Red tint if damage boost is active
+                ctx.fillStyle = 'rgba(255, 50, 50, 0.8)';
+            } else if (player.speedBoostTimer > 0) {
+                // Green tint if speed boost is active
+                ctx.fillStyle = 'rgba(50, 255, 50, 0.8)';
+            } else {
+                // Default color for the player
+                ctx.fillStyle = 'blue';
+            }
+            
+            ctx.beginPath();
+            ctx.arc(player.x, player.y, player.size/2, 0, Math.PI * 2);
+            ctx.fill();
+            
+            // If the player currently has a weapon, draw a small indicator
+            if (player.weapon) {
+                ctx.fillStyle = player.weapon.color;
+                ctx.beginPath();
+                ctx.arc(
+                    player.x + player.direction.x * player.size/2,
+                    player.y + player.direction.y * player.size/2,
+                    5,
+                    0,
+                    Math.PI * 2
+                );
+                ctx.fill();
+                
+                // Outline showing the direction of the weapon
+                ctx.strokeStyle = player.weapon.color;
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.moveTo(
+                    player.x + player.direction.x * player.size/2,
+                    player.y + player.direction.y * player.size/2
+                );
+                ctx.lineTo(
+                    player.x + player.direction.x * (player.size/2 + 15),
+                    player.y + player.direction.y * (player.size/2 + 15)
+                );
+                ctx.stroke();
+                ctx.lineWidth = 1;
+            }
+            
+            // Show a small effect if the player is in the middle of an attack
+            if (player.isAttacking) {
+                if (player.attackType === 'punch') {
+                    ctx.fillStyle = 'rgba(255, 255, 0, 0.5)';
+                    ctx.beginPath();
+                    ctx.arc(
+                        player.x + player.direction.x * PLAYER_SIZE,
+                        player.y + player.direction.y * PLAYER_SIZE,
+                        15,
+                        0,
+                        Math.PI * 2
+                    );
+                    ctx.fill();
+                } else if (player.attackType === 'kick') {
+                    ctx.fillStyle = 'rgba(255, 150, 0, 0.5)';
+                    ctx.beginPath();
+                    ctx.arc(
+                        player.x + player.direction.x * PLAYER_SIZE * 1.3,
+                        player.y + player.direction.y * PLAYER_SIZE * 1.3,
+                        20,
+                        0,
+                        Math.PI * 2
+                    );
+                    ctx.fill();
+                }
+            }
+            
+            // Direction indicator line for the player
+            ctx.strokeStyle = 'white';
+            ctx.beginPath();
+            ctx.moveTo(player.x, player.y);
+            ctx.lineTo(
+                player.x + player.direction.x * 20,
+                player.y + player.direction.y * 20
+            );
+            ctx.stroke();
+            
+            // Render all particles last
+            particles.forEach(particle => {
+                ctx.fillStyle = particle.color;
+                ctx.beginPath();
+                ctx.arc(particle.x, particle.y, particle.size, 0, Math.PI * 2);
+                ctx.fill();
+            });
+            
+            // If the game ended, overlay a semi-transparent black rectangle and display text
+            if (gameOver) {
+                ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+                
+                ctx.fillStyle = 'white';
+                ctx.font = '36px Arial';
+                ctx.textAlign = 'center';
+                ctx.fillText('GAME OVER', canvas.width / 2, canvas.height / 2 - 20);
+                ctx.font = '24px Arial';
+                ctx.fillText(`Enemies KO'd: ${score}`, canvas.width / 2, canvas.height / 2 + 20);
+                ctx.fillText('Press R to restart', canvas.width / 2, canvas.height / 2 + 60);
+            }
+        }
+        
+        // Reset all game variables to their initial values to start a new game
+        function resetGame() {
+            player.x = canvas.width / 2;
+            player.y = canvas.height / 2;
+            player.health = 100;
+            player.maxHealth = 100;
+            player.punchCooldown = 0;
+            player.kickCooldown = 0;
+            player.grabCooldown = 0;
+            player.dodgeCooldown = 0;
+            player.specialMeter = 0;
+            player.isAttacking = false;
+            player.isDodging = false;
+            player.isGrabbing = false;
+            player.grabbedEnemy = null;
+            player.direction = { x: 0, y: 1 };
+            player.weapon = null;
+            
+            enemies = [];
+            pickups = [];
+            particles = [];
+            splatters = [];
+            
+            score = 0;
+            gameTime = 0;
+            waveNumber = 1;
+            bossSpawned = false;
+            
+            // Update the UI displays
+            healthDisplay.textContent = player.health;
+            scoreDisplay.textContent = score;
+            weaponDisplay.textContent = 'Fists';
+            updateSpecialMeter();
+            
+            gameOver = false;
+            
+            // Spawn initial enemies and items again
+            spawnInitialEnemies();
+            spawnInitialPickups();
+        }
+        
+        // Helper function: check collision of a rectangle with any furniture
+        function checkCollision(rect) {
+            return furniture.some(f => rectCollision(rect, f));
+        }
+        
+        // Helper function: check for collisions with furniture, return info
+        function checkFurnitureCollision(rect) {
+            for (let i = 0; i < furniture.length; i++) {
+                if (rectCollision(rect, furniture[i])) {
+                    return {
+                        collides: true,
+                        furniture: furniture[i]
+                    };
+                }
+            }
+            return { collides: false };
+        }
+        
+        // Rectangle vs. rectangle collision detection
+        function rectCollision(rect1, rect2) {
+            return (
+                rect1.x < rect2.x + rect2.width &&
+                rect1.x + rect1.width > rect2.x &&
+                rect1.y < rect2.y + rect2.height &&
+                rect1.y + rect1.height > rect2.y
+            );
+        }
+        
+        // Circle vs. circle collision detection
+        function circleCollision(circle1, circle2) {
+            const dx = circle1.x - circle2.x;
+            const dy = circle1.y - circle2.y;
+            const distance = Math.sqrt(dx * dx + dy * dy);
+            return distance < (circle1.radius + circle2.radius);
+        }
+        
+        // Distance from a point to the closest point in (or on) a rectangle
+        function pointRectDistance(px, py, rx, ry, rw, rh) {
+            const cx = Math.max(Math.min(px, rx + rw), rx);
+            const cy = Math.max(Math.min(py, ry + rh), ry);
+            const dx = px - cx;
+            const dy = py - cy;
+            return Math.sqrt(dx * dx + dy * dy);
+        }
+        
+        // Convert a hex color (e.g., #ff9900) into an "R, G, B" string
+        function hexToRgb(hex) {
+            hex = hex.replace('#', '');
+            const r = parseInt(hex.substring(0, 2), 16);
+            const g = parseInt(hex.substring(2, 4), 16);
+            const b = parseInt(hex.substring(4, 6), 16);
+            return `${r}, ${g}, ${b}`;
+        }
+        
+        // Darken a hex color based on a given factor (0.0 to 1.0)
+        function darkenColor(color, factor) {
+            color = color.replace('#', '');
+            
+            let r = parseInt(color.substring(0, 2), 16);
+            let g = parseInt(color.substring(2, 4), 16);
+            let b = parseInt(color.substring(4, 6), 16);
+            
+            r = Math.floor(r * factor);
+            g = Math.floor(g * factor);
+            b = Math.floor(b * factor);
+            
+            r = Math.min(255, Math.max(0, r));
+            g = Math.min(255, Math.max(0, g));
+            b = Math.min(255, Math.max(0, b));
+            
+            return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`;
+        }
+        
+        // Start everything
+        init();
+    </script>
+</body>
+</html>
